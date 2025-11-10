@@ -1,61 +1,12 @@
-import { useContext, useEffect } from 'react';
+
+import { useContext } from 'react';
 import { AppContext } from '../context/AppContext';
 import { User, UserRole } from '../types';
 import { supabase } from '../lib/supabaseClient';
+import { mapToCamelCase } from '../lib/utils';
 
 export const useAuth = () => {
   const { state, dispatch } = useContext(AppContext);
-
-  useEffect(() => {
-    if (!supabase) return;
-
-    const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-        
-        if (error) {
-          console.error("Error fetching profile:", error);
-        } else if (profile) {
-          // The profile table doesn't store email, get it from session
-          const userWithProfile: User = { ...profile, email: session.user.email || '' };
-          dispatch({ type: 'SET_CURRENT_USER', payload: userWithProfile });
-        }
-      }
-      dispatch({ type: 'SET_LOADING', payload: false });
-    };
-
-    getSession();
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session) {
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-        
-        if (error) {
-          console.error("Error fetching profile on auth change:", error);
-           dispatch({ type: 'SET_CURRENT_USER', payload: null });
-        } else if (profile) {
-          const userWithProfile: User = { ...profile, email: session.user.email || '' };
-          dispatch({ type: 'SET_CURRENT_USER', payload: userWithProfile });
-        }
-      } else {
-        dispatch({ type: 'SET_CURRENT_USER', payload: null });
-      }
-    });
-
-    return () => {
-      authListener.subscription.unsubscribe();
-    };
-  }, [dispatch]);
-
 
   const login = async (email: string, password_do_not_use: string) => {
     if (!supabase) throw new Error("Supabase not configured");
@@ -92,66 +43,81 @@ export const useAuth = () => {
     if (error) throw error;
     if (!data.user) throw new Error("Registration failed, no user returned.");
     
-    // The trigger will create the profile, so we don't need to do it here.
+    // A trigger is expected to create the public profile.
+    // After registration, the onAuthStateChange listener in AppContext will handle reloading data.
     return data.user;
   };
 
   const updateUser = async (userId: string, userData: Partial<User>, oldPassword?: string) => {
       if (!supabase) throw new Error("Supabase not configured");
+      // Supabase policies will handle authorization
       const { name, phone, role, email, password } = userData;
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || user.id !== userId) throw new Error("Not authorized");
 
-      // Update profile data
+      // Update profile data in public.users table
       const { error: profileError } = await supabase
-        .from('profiles')
-        .update({ name, phone, role })
+        .from('users')
+        .update({ name, phone, role, email }) // email might be updated here too
         .eq('id', userId);
       if (profileError) throw profileError;
 
-      // Update email if changed
+      // Update auth.users data (email, password)
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("User not found");
+
+      let authUpdatePayload: any = {};
       if (email && email !== user.email) {
-          const { error: emailError } = await supabase.auth.updateUser({ email });
-          if (emailError) throw emailError;
+          authUpdatePayload.email = email;
       }
-      
-      // Update password if changed. Supabase doesn't require old password for update.
       if (password) {
-          const { error: passwordError } = await supabase.auth.updateUser({ password });
-          if (passwordError) throw passwordError;
+          authUpdatePayload.password = password;
+      }
+
+      if (Object.keys(authUpdatePayload).length > 0) {
+        const { error: authError } = await supabase.auth.updateUser(authUpdatePayload);
+        if (authError) throw authError;
       }
       
       // Re-fetch user to update state
-       const { data: profile } = await supabase
-          .from('profiles')
+       const { data: profile, error: refetchError } = await supabase
+          .from('users')
           .select('*')
           .eq('id', user.id)
           .single();
+
+      if (refetchError) throw refetchError;
+      
       if(profile) {
-        const userWithProfile: User = { ...profile, email: user.email || '' };
+        const userWithProfile: User = { ...mapToCamelCase(profile), email: user.email || profile.email };
         dispatch({ type: 'UPDATE_USER', payload: userWithProfile });
       }
   };
 
 
   const deleteUser = async (userId: string) => {
-    // Note: Deleting users directly is a sensitive operation.
-    // In a real app, this should be a server-side function with admin checks.
-    // This client-side implementation is for mock purposes.
-    console.warn("User deletion should be handled by a secure backend function.");
+    if (!supabase) throw new Error("Supabase not configured");
     if (state.currentUser?.id === userId) {
         alert("You cannot delete your own account.");
         return;
     }
-    // For now, we just remove from local state as there's no direct client-side delete.
+    // This action should be handled by an admin user. Supabase RLS policies should enforce this.
+    // Deleting from public.users should cascade-delete the auth.user via a DB trigger if configured.
+    // For now, we just delete the public profile.
+    console.warn("User profile deletion initiated. Deleting the auth user requires a cascade delete setup in the database.");
+    const { error } = await supabase.from('users').delete().eq('id', userId);
+
+    if (error) {
+        console.error("Error deleting user profile:", error);
+        throw error;
+    }
+    
     dispatch({ type: 'DELETE_USER', payload: userId });
   };
 
   return {
-    session: state.currentUser ? { user: { id: state.currentUser.id } } : null, // Mock session object
+    session: state.currentUser ? { user: { id: state.currentUser.id } } : null,
     currentUser: state.currentUser,
-    users: state.users, // This will need to be fetched from profiles table later
     loading: state.loading,
+    dbError: state.dbError,
     login,
     logout,
     register,

@@ -1,5 +1,4 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { useAuth } from '../../hooks/useAuth';
 import { Customer, StoryDetails, Order, OrderStatus } from '../../types';
@@ -9,23 +8,26 @@ interface CreateOrderModalProps {
   onClose: () => void;
 }
 
-const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = error => reject(error);
-    });
-};
-
 const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
   const { createOrder } = useData();
   const { currentUser } = useAuth();
   const [customer, setCustomer] = useState<Customer>({ name: '', address: '', country: 'مصر', phone: '', altPhone: '' });
   const [story, setStory] = useState<StoryDetails>({ ownerName: '', details: '', type: 'Hardcover', copies: 1 });
   const [price, setPrice] = useState(0);
-  const [images, setImages] = useState<{name: string, url: string}[]>([]);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+
+  useEffect(() => {
+    // Create blob URLs for previews
+    const newPreviews = imageFiles.map(file => URL.createObjectURL(file));
+    setImagePreviews(newPreviews);
+    
+    // Cleanup function
+    return () => {
+      newPreviews.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, [imageFiles]);
 
   const handleCustomerChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setCustomer({ ...customer, [e.target.name]: e.target.value });
@@ -35,45 +37,38 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
     setStory({ ...story, [e.target.name]: e.target.value });
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-        setIsUploading(true);
         const files = Array.from(e.target.files);
-        try {
-            // FIX: Explicitly type `file` as `File` to resolve type inference error.
-            const imagePromises = files.map(async (file: File) => ({
-                name: file.name,
-                url: await fileToBase64(file),
-            }));
-            const newImages = await Promise.all(imagePromises);
-            setImages(prev => [...prev, ...newImages]);
-        } catch (error) {
-            console.error("Error converting files to base64", error);
-            alert("There was an error uploading the images.");
-        } finally {
-            setIsUploading(false);
-        }
+        setImageFiles(prev => [...prev, ...files]);
     }
   };
 
   const removeImage = (index: number) => {
-      setImages(prev => prev.filter((_, i) => i !== index));
+      setImageFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
     
-    const newOrder: Omit<Order, 'id' | 'createdAt' | 'activityLog'> = {
-      status: OrderStatus.New,
-      customer,
-      story,
-      price,
-      referenceImages: images,
-      createdBy: currentUser.id,
-    };
-    createOrder(newOrder);
-    onClose();
+    setIsUploading(true);
+    try {
+        const newOrderData: Omit<Order, 'id' | 'createdAt' | 'activityLog' | 'referenceImages'> = {
+            status: OrderStatus.New,
+            customer,
+            story,
+            price,
+            createdBy: currentUser.id,
+        };
+        await createOrder(newOrderData, imageFiles);
+        onClose();
+    } catch (error) {
+        console.error("Failed to create order:", error);
+        alert("An error occurred while creating the order. Please check the console and try again.");
+    } finally {
+        setIsUploading(false);
+    }
   };
 
   return (
@@ -149,13 +144,13 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
                  <h3 className="font-semibold text-lg">Reference Images</h3>
                  <input type="file" multiple onChange={handleImageUpload} accept="image/*" className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100" />
                  {isUploading && <p className="text-sm text-gray-500">Processing images...</p>}
-                 {images.length > 0 && (
+                 {imagePreviews.length > 0 && (
                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
-                         {images.map((image, index) => (
+                         {imagePreviews.map((previewUrl, index) => (
                              <div key={index} className="relative">
-                                 <img src={image.url} alt={image.name} className="w-full h-24 object-cover rounded-md" />
+                                 <img src={previewUrl} alt={imageFiles[index].name} className="w-full h-24 object-cover rounded-md" />
                                  <button type="button" onClick={() => removeImage(index)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 text-xs">&times;</button>
-                                 <p className="text-xs truncate text-gray-600">{image.name}</p>
+                                 <p className="text-xs truncate text-gray-600">{imageFiles[index].name}</p>
                              </div>
                          ))}
                      </div>
@@ -167,7 +162,7 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
           <div className="mt-8 flex justify-end gap-4">
             <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancel</button>
             <button type="submit" className="py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700" disabled={isUploading}>
-              {isUploading ? 'Uploading...' : 'Create Order'}
+              {isUploading ? 'Saving...' : 'Create Order'}
             </button>
           </div>
         </form>

@@ -1,6 +1,6 @@
-
 import React, { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useData } from '../../hooks/useData';
 import { User, UserRole } from '../../types';
 import { XCircleIcon, PlusCircleIcon, LogOutIcon } from '../ui/Icons';
 
@@ -8,7 +8,7 @@ import { XCircleIcon, PlusCircleIcon, LogOutIcon } from '../ui/Icons';
 const UserFormModal: React.FC<{
   userToEdit?: User | null;
   onClose: () => void;
-  onSave: (userData: any, userId?: string, oldPassword?: string) => void;
+  onSave: (userData: any, userId?: string, oldPassword?: string) => Promise<void>;
   existingUsers: User[];
 }> = ({ userToEdit, onClose, onSave, existingUsers }) => {
   const isEditMode = !!userToEdit;
@@ -27,12 +27,13 @@ const UserFormModal: React.FC<{
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -43,8 +44,9 @@ const UserFormModal: React.FC<{
     }
 
     if (isSelfEdit && newPassword && !oldPassword) {
-      setError("Current password is required to set a new password.");
-      return;
+      // Supabase does not require old password for update, so we can remove this client-side check.
+      // setError("Current password is required to set a new password.");
+      // return;
     }
 
     if (!isEditMode && !newPassword) {
@@ -52,7 +54,6 @@ const UserFormModal: React.FC<{
       return;
     }
     
-    // Email duplication check
     const checkEmail = formData.email.toLowerCase();
     const emailExists = existingUsers.some(user => 
         user.email.toLowerCase() === checkEmail && user.id !== userToEdit?.id
@@ -64,22 +65,23 @@ const UserFormModal: React.FC<{
     }
 
     // --- Save Logic ---
+    setIsSubmitting(true);
     try {
+        let dataToSave: any;
         if (!isEditMode) {
-            // Adding new user
-            const dataToSave = { ...formData, password_do_not_use: newPassword };
-            onSave(dataToSave);
+            dataToSave = { ...formData, password_do_not_use: newPassword };
         } else {
-            // Editing existing user
-            const dataToSave: any = { ...formData };
+            dataToSave = { ...formData };
             if (newPassword) {
                 dataToSave.password = newPassword;
             }
-            onSave(dataToSave, userToEdit?.id, oldPassword);
         }
-        onClose(); // Close modal on successful save
+        await onSave(dataToSave, userToEdit?.id, oldPassword);
+        onClose();
     } catch (err: any) {
         setError(err.message || 'An error occurred.');
+    } finally {
+        setIsSubmitting(false);
     }
   };
 
@@ -94,20 +96,20 @@ const UserFormModal: React.FC<{
             <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                     <label className="block text-sm font-medium">Full Name</label>
-                    <input type="text" name="name" value={formData.name} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required />
+                    <input type="text" name="name" value={formData.name} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required disabled={isSubmitting} />
                 </div>
                  <div>
                     <label className="block text-sm font-medium">Email</label>
-                    <input type="email" name="email" value={formData.email} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required />
+                    <input type="email" name="email" value={formData.email} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required disabled={isSubmitting} />
                 </div>
                 <div>
                     <label className="block text-sm font-medium">Phone</label>
-                    <input type="tel" name="phone" value={formData.phone} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required />
+                    <input type="tel" name="phone" value={formData.phone} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required disabled={isSubmitting} />
                 </div>
                 {isAdmin && (
                     <div>
                         <label className="block text-sm font-medium">Role</label>
-                        <select name="role" value={formData.role} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={userToEdit?.id === currentUser?.id}>
+                        <select name="role" value={formData.role} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting || userToEdit?.id === currentUser?.id}>
                             {Object.values(UserRole).map(r => <option key={r} value={r}>{r}</option>)}
                         </select>
                          {userToEdit?.id === currentUser?.id && <p className="text-xs text-gray-500 mt-1">Admins cannot change their own role.</p>}
@@ -119,21 +121,23 @@ const UserFormModal: React.FC<{
                     {isSelfEdit && (
                         <div>
                             <label className="block text-sm font-medium">Current Password</label>
-                            <input type="password" name="oldPassword" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="Required to change password" className="mt-1 w-full border-gray-300 rounded-md shadow-sm" />
+                            <input type="password" name="oldPassword" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="Not required by Supabase, but good practice" className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
                         </div>
                     )}
                     <div>
                         <label className="block text-sm font-medium">New Password</label>
-                        <input type="password" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={isEditMode ? "Leave blank to keep current" : "Required for new user"} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" />
+                        <input type="password" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={isEditMode ? "Leave blank to keep current" : "Required for new user"} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
                     </div>
                     <div>
                         <label className="block text-sm font-medium">Confirm New Password</label>
-                        <input type="password" name="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" />
+                        <input type="password" name="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
                     </div>
                 </div>
 
                 <div className="flex justify-end pt-4">
-                    <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Save Changes</button>
+                    <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg disabled:bg-blue-400" disabled={isSubmitting}>
+                        {isSubmitting ? 'Saving...' : 'Save Changes'}
+                    </button>
                 </div>
             </form>
         </div>
@@ -143,17 +147,21 @@ const UserFormModal: React.FC<{
 
 
 const Users: React.FC = () => {
-    const { currentUser, users, updateUser, deleteUser, register, logout } = useAuth();
+    const { currentUser, updateUser, deleteUser, register, logout } = useAuth();
+    const { users } = useData();
     const [modalUser, setModalUser] = useState<User | null | 'new'>(null);
 
     const isAdmin = currentUser?.role === UserRole.Admin;
 
-    const handleSaveUser = (userData: any, userId?: string, oldPassword?: string) => {
+    const handleSaveUser = async (userData: any, userId?: string, oldPassword?: string) => {
         if (userId) { // Editing existing user
             const { password_do_not_use, ...data } = userData;
-            updateUser(userId, data, oldPassword);
+            await updateUser(userId, data, oldPassword);
         } else { // Adding new user
-            register(userData);
+            await register(userData);
+            // In a real app, you might want to refetch users or add the new user to state
+            // to avoid a full page reload. For now, we rely on AppProvider's data fetching.
+            // A page reload or re-fetch of data will be needed to see the new user.
         }
     };
 

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Order, OrderStatus, UserRole, Customer, StoryDetails } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
@@ -10,18 +9,10 @@ interface OrderDetailModalProps {
   onClose: () => void;
 }
 
-const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = error => reject(error);
-    });
-};
-
 const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) => {
   const { currentUser } = useAuth();
-  const { updateOrderStatus, editOrder, deleteOrder, designers, printers, shippingCompanies } = useData();
+  const { updateOrder, deleteOrder, designers, printers, shippingCompanies } = useData();
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // State for actions
   const [selectedDesigner, setSelectedDesigner] = useState('');
@@ -41,48 +32,45 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
 
   const canModify = currentUser?.role === UserRole.Admin || currentUser?.id === order.createdBy;
 
-  const handleAssignDesigner = () => {
+  const handleAssignDesigner = async () => {
     if (!selectedDesigner) return;
     const designer = designers.find(d => d.id === selectedDesigner);
     const updatedOrder = { ...order, status: OrderStatus.Designing, assignedToDesigner: selectedDesigner };
-    updateOrderStatus(updatedOrder, `Assigned to Designer ${designer?.name}`);
+    await updateOrder(updatedOrder, `Assigned to Designer ${designer?.name}`);
     onClose();
   };
 
   const handleCompleteDesign = async () => {
     if (!selectedPrinter || !coverImageFile || !pdfFile) return;
 
+    setIsSubmitting(true);
     try {
         const printer = printers.find(p => p.id === selectedPrinter);
         if (!printer) throw new Error("Selected printer not found");
         
-        const coverImageUrl = await fileToBase64(coverImageFile);
-        const pdfUrl = await fileToBase64(pdfFile);
-
-        const coverImage = { name: coverImageFile.name, url: coverImageUrl };
-        const finalPdf = { name: pdfFile.name, url: pdfUrl };
-
         const updatedOrder = { 
             ...order, 
             status: OrderStatus.Printing, 
             assignedToPrinter: selectedPrinter, 
-            coverImage,
-            finalPdf 
         };
         
-        updateOrderStatus(updatedOrder, `Completed Design & Assigned to ${printer.name}`, finalPdf);
+        await updateOrder(
+            updatedOrder, 
+            `Completed Design & Assigned to ${printer.name}`, 
+            { coverImageFile, pdfFile }
+        );
         onClose();
 
     } catch (error) {
         console.error("Error completing design:", error);
         alert("Failed to upload files. Please try again.");
+    } finally {
+        setIsSubmitting(false);
     }
   };
 
-  const handleFinishPrinting = () => {
-    if (!selectedIntlShipping || !intlTracking) {
-      return;
-    }
+  const handleFinishPrinting = async () => {
+    if (!selectedIntlShipping || !intlTracking) return;
     const company = shippingCompanies.find(s => s.id === selectedIntlShipping);
     const updatedOrder = {
         ...order,
@@ -93,14 +81,12 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
             date: new Date()
         }
     };
-    updateOrderStatus(updatedOrder, `Printing Complete. Shipped via ${company?.name}`);
+    await updateOrder(updatedOrder, `Printing Complete. Shipped via ${company?.name}`);
     onClose();
   };
 
-  const handleFinishPrintingAndShipDomestic = () => {
-    if (!selectedDomShipping || !domTracking) {
-        return;
-    }
+  const handleFinishPrintingAndShipDomestic = async () => {
+    if (!selectedDomShipping || !domTracking) return;
     const company = shippingCompanies.find(s => s.id === selectedDomShipping);
     const updatedOrder = {
         ...order,
@@ -111,11 +97,11 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
             date: new Date()
         }
     };
-    updateOrderStatus(updatedOrder, `Printing Complete. Shipped domestically via ${company?.name}`);
+    await updateOrder(updatedOrder, `Printing Complete. Shipped domestically via ${company?.name}`);
     onClose();
   };
   
-  const handleIntlArrival = () => {
+  const handleIntlArrival = async () => {
       if (!selectedDomShipping) return;
       const company = shippingCompanies.find(s => s.id === selectedDomShipping);
       const updatedOrder = {
@@ -123,43 +109,43 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
           status: OrderStatus.DomesticShipping,
           domesticShippingInfo: {
               company: company?.name || 'Unknown',
-              trackingNumber: `DOM-${order.id}`, // Mock tracking
+              trackingNumber: domTracking || `DOM-${order.id}`, // Use tracking if available
               date: new Date()
           }
       };
-      updateOrderStatus(updatedOrder, `Arrived in country. Forwarded to ${company?.name}`);
+      await updateOrder(updatedOrder, `Arrived in country. Forwarded to ${company?.name}`);
       onClose();
   };
   
-  const handleMarkDelivered = () => {
+  const handleMarkDelivered = async () => {
       const updatedOrder = { ...order, status: OrderStatus.Delivered, deliveryDate: new Date() };
-      updateOrderStatus(updatedOrder, 'Marked as Delivered');
+      await updateOrder(updatedOrder, 'Marked as Delivered');
       onClose();
   };
 
-  const handleCancelOrder = () => {
+  const handleCancelOrder = async () => {
     if (window.confirm('Are you sure you want to cancel this order? This action cannot be undone.')) {
         const updatedOrder = { ...order, status: OrderStatus.Cancelled };
-        updateOrderStatus(updatedOrder, 'Order Cancelled');
+        await updateOrder(updatedOrder, 'Order Cancelled');
         onClose();
     }
   };
 
-  const handleDeleteOrder = () => {
+  const handleDeleteOrder = async () => {
     if (window.confirm(`Are you sure you want to permanently delete order ${order.id}? This action cannot be undone.`)) {
-        deleteOrder(order.id);
+        await deleteOrder(order.id);
         onClose();
     }
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     const updatedOrderData: Order = {
         ...order,
         customer: editedCustomer,
         story: editedStory,
         price: editedPrice,
     };
-    editOrder(updatedOrderData, 'Order details updated');
+    await updateOrder(updatedOrderData, 'Order details updated');
     setIsEditing(false);
   };
   
@@ -195,8 +181,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                      <option value="">Select Printer</option>
                      {printers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-                <button onClick={handleCompleteDesign} disabled={!isReady} className={`w-full text-white px-4 py-2 rounded-md transition-colors ${!isReady ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'}`}>
-                    Complete Design & Send to Printer
+                <button onClick={handleCompleteDesign} disabled={!isReady || isSubmitting} className={`w-full text-white px-4 py-2 rounded-md transition-colors ${!isReady || isSubmitting ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'}`}>
+                    {isSubmitting ? 'Submitting...' : 'Complete Design & Send to Printer'}
                 </button>
                 {!isReady && <p className="text-xs text-red-500 text-center mt-1">All fields are required to proceed.</p>}
              </div>
@@ -286,7 +272,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                             <option value="">Select Domestic Shipping Co.</option>
                             {shippingCompanies.filter(s => s.type === 'Domestic').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                          </select>
-                         <button onClick={handleIntlArrival} className="w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Confirm Arrival & Ship Locally</button>
+                          <input type="text" placeholder="New Tracking Number (Optional)" value={domTracking} onChange={e => setDomTracking(e.target.value)} className="w-full border-gray-300 rounded-md shadow-sm" />
+                         <button onClick={handleIntlArrival} disabled={!selectedDomShipping} className="w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 disabled:bg-gray-400">Confirm Arrival & Ship Locally</button>
                      </div>
                  </div>
             )
@@ -399,7 +386,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                 </div>
             )}
 
-             {order.referenceImages.length > 0 && (
+             {order.referenceImages && order.referenceImages.length > 0 && (
                 <div>
                     <h3 className="font-semibold text-lg mb-2 border-b pb-2">Reference Images</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -418,7 +405,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
             <div>
                 <h3 className="font-semibold text-lg mb-2 border-b pb-2">Activity Log</h3>
                 <ul className="space-y-2 text-sm max-h-48 overflow-y-auto pr-2">
-                    {[...order.activityLog].reverse().map((log, index) => (
+                    {[...(order.activityLog || [])].reverse().map((log, index) => (
                         <li key={index} className="p-2 bg-gray-50 rounded-md">
                             <span className="font-semibold text-gray-700">{log.user}</span> ({log.role}) - {log.action}
                             <span className="text-gray-500 block text-xs">{new Date(log.timestamp).toLocaleString()}</span>

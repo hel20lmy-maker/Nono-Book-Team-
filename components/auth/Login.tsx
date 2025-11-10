@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -13,17 +12,18 @@ const Login: React.FC<LoginProps> = ({ onSwitchToRegister }) => {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      login(email, password);
+      await login(email, password);
     } catch (err: any) {
       setError(err.message || 'An unexpected error occurred.');
       setLoading(false);
     }
-    // No finally block needed, loading will be false on success because the component will unmount.
+    // On success, the auth listener will update the state and the component will unmount.
+    // So we don't need to set loading to false in a finally block.
   };
 
   return (

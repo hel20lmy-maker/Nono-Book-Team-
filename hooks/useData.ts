@@ -1,51 +1,109 @@
-
 import { useContext } from 'react';
 import { AppContext } from '../context/AppContext';
-import { Order, UserRole, OrderStatus, ActivityLogEntry, HoursLog, Bonus, Payment } from '../types';
+import { Order, User, UserRole, OrderStatus, ActivityLogEntry, HoursLog, Bonus, Payment } from '../types';
 import { useAuth } from './useAuth';
+import { supabase } from '../lib/supabaseClient';
+import { mapToCamelCase } from '../lib/utils';
+
+
+// Helper function to map Supabase order (snake_case) to frontend Order (camelCase) and parse dates.
+const mapDbOrderToStateOrder = (dbOrder: any): Order => {
+    const order = mapToCamelCase(dbOrder);
+    return {
+        ...order,
+        createdAt: new Date(order.createdAt),
+        deliveryDate: order.deliveryDate ? new Date(order.deliveryDate) : undefined,
+        activityLog: (order.activityLog || []).map((log: any) => ({
+            ...log,
+            timestamp: new Date(log.timestamp)
+        })),
+        internationalShippingInfo: order.internationalShippingInfo ? {
+            ...order.internationalShippingInfo,
+            date: new Date(order.internationalShippingInfo.date)
+        } : undefined,
+        domesticShippingInfo: order.domesticShippingInfo ? {
+            ...order.domesticShippingInfo,
+            date: new Date(order.domesticShippingInfo.date)
+        } : undefined,
+    };
+}
 
 export const useData = () => {
   const { state, dispatch } = useContext(AppContext);
   const { currentUser } = useAuth();
 
-  const createOrder = (orderData: Omit<Order, 'id' | 'createdAt' | 'activityLog'>) => {
-    if (!currentUser) throw new Error("User not authenticated");
+  const uploadOrderFile = async (file: File, orderId: string): Promise<{ name: string; url: string }> => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const filePath = `public/${orderId}/${Date.now()}-${file.name}`;
+    const { error: uploadError } = await supabase.storage.from('order-files').upload(filePath, file);
+    if (uploadError) {
+        console.error('Error uploading file:', uploadError);
+        throw uploadError;
+    }
+    const { data } = supabase.storage.from('order-files').getPublicUrl(filePath);
+    return { name: file.name, url: data.publicUrl };
+  };
+
+
+  const createOrder = async (orderData: Omit<Order, 'id' | 'createdAt' | 'activityLog' | 'referenceImages'>, files: File[]) => {
+    if (!currentUser || !supabase) throw new Error("User not authenticated");
     
-    const newOrderId = `ORD-${String(Math.floor(Date.now() / 1000)).slice(-6)}`;
+    // 1. Insert order data to get a new order ID
+    const initialActivity: ActivityLogEntry = {
+        user: currentUser.name,
+        role: currentUser.role,
+        action: 'Created Order',
+        timestamp: new Date()
+    };
     
-    const newOrder: Order = {
+    const dbPayload = {
         ...orderData,
-        id: newOrderId,
-        createdAt: new Date(),
-        activityLog: [{
-            user: currentUser.name,
-            role: currentUser.role,
-            action: 'Created Order',
-            timestamp: new Date()
-        }]
+        created_by: currentUser.id, // snake_case for DB
+        created_at: new Date(),
+        activity_log: [initialActivity],
+        reference_images: []
     };
 
-    dispatch({ type: 'ADD_ORDER', payload: newOrder });
+    const { data: newOrder, error: insertError } = await supabase
+        .from('orders')
+        .insert(dbPayload)
+        .select()
+        .single();
+    
+    if (insertError) throw insertError;
+
+    // 2. Upload files using the new order ID
+    const uploadPromises = files.map(file => uploadOrderFile(file, newOrder.id));
+    const uploadedImages = await Promise.all(uploadPromises);
+
+    // 3. Update the order with the file URLs
+    const { data: updatedOrder, error: updateError } = await supabase
+        .from('orders')
+        .update({ reference_images: uploadedImages })
+        .eq('id', newOrder.id)
+        .select()
+        .single();
+
+    if (updateError) throw updateError;
+    
+    dispatch({ type: 'ADD_ORDER', payload: mapDbOrderToStateOrder(updatedOrder) });
   };
   
-  const updateOrderStatus = (order: Order, actionDescription: string, file?: {name: string, url: string}) => {
-    if (!currentUser) throw new Error("User not authenticated");
+  const updateOrder = async (order: Order, actionDescription: string, newFiles?: { coverImageFile?: File, pdfFile?: File }) => {
+    if (!currentUser || !supabase) throw new Error("User not authenticated");
     
-    const newActivityLog: ActivityLogEntry = {
-        user: currentUser.name,
-        role: currentUser.role,
-        action: actionDescription,
-        timestamp: new Date(),
-        file: file,
-    }
-    const updatedOrder = { ...order, activityLog: [...order.activityLog, newActivityLog] };
-    
-    dispatch({ type: 'UPDATE_ORDER', payload: updatedOrder });
-  }
+    let updatedOrderData = { ...order };
 
-  const editOrder = (updatedOrder: Order, actionDescription: string) => {
-    if (!currentUser) throw new Error("User not authenticated");
-    
+    // Handle file uploads if they exist
+    if (newFiles?.coverImageFile) {
+        const coverImage = await uploadOrderFile(newFiles.coverImageFile, order.id);
+        updatedOrderData.coverImage = coverImage;
+    }
+    if (newFiles?.pdfFile) {
+        const finalPdf = await uploadOrderFile(newFiles.pdfFile, order.id);
+        updatedOrderData.finalPdf = finalPdf;
+    }
+
     const newActivityLog: ActivityLogEntry = {
         user: currentUser.name,
         role: currentUser.role,
@@ -53,38 +111,98 @@ export const useData = () => {
         timestamp: new Date(),
     };
 
-    const newOrderState = { ...updatedOrder, activityLog: [...updatedOrder.activityLog, newActivityLog] };
-    dispatch({ type: 'UPDATE_ORDER', payload: newOrderState });
-  };
+    if (newFiles?.pdfFile && updatedOrderData.finalPdf) {
+        newActivityLog.file = { name: newFiles.pdfFile.name, url: updatedOrderData.finalPdf.url };
+    }
 
-  const deleteOrder = (orderId: string) => {
+    updatedOrderData.activityLog = [...order.activityLog, newActivityLog];
+    
+    // Omit fields that cannot be updated directly or are handled by DB
+    const { id, createdBy, createdAt, ...updatePayload } = updatedOrderData;
+    
+    // Convert to snake_case for Supabase
+    const dbPayload = {
+      status: updatePayload.status,
+      customer: updatePayload.customer,
+      story: updatePayload.story,
+      price: updatePayload.price,
+      reference_images: updatePayload.referenceImages,
+      final_pdf: updatePayload.finalPdf,
+      cover_image: updatePayload.coverImage,
+      assigned_to_designer: updatePayload.assignedToDesigner,
+      assigned_to_printer: updatePayload.assignedToPrinter,
+      international_shipping_info: updatePayload.internationalShippingInfo,
+      domestic_shipping_info: updatePayload.domesticShippingInfo,
+      delivery_date: updatePayload.deliveryDate,
+      activity_log: updatePayload.activityLog,
+    };
+    
+    const { data: savedOrder, error } = await supabase
+        .from('orders')
+        .update(dbPayload)
+        .eq('id', id)
+        .select()
+        .single();
+
+    if (error) throw error;
+    
+    dispatch({ type: 'UPDATE_ORDER', payload: mapDbOrderToStateOrder(savedOrder) });
+  }
+
+  const deleteOrder = async (orderId: string) => {
+      if (!supabase) throw new Error("Supabase not configured");
+      // TODO: Add logic to delete files from storage if needed
+      const { error } = await supabase.from('orders').delete().eq('id', orderId);
+      if (error) throw error;
       dispatch({ type: 'DELETE_ORDER', payload: orderId });
   };
 
-  const addHoursLog = (logData: Omit<HoursLog, 'id'>) => {
-    const newLog: HoursLog = { ...logData, id: `hl-${Date.now()}` };
-    dispatch({ type: 'ADD_HOURS_LOG', payload: newLog });
+  const addHoursLog = async (logData: Omit<HoursLog, 'id'>) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const { data, error } = await supabase.from('hours_logs').insert({user_id: logData.userId, ...logData}).select().single();
+    if (error) throw error;
+    dispatch({ type: 'ADD_HOURS_LOG', payload: mapToCamelCase(data) });
   };
 
-  const addBonus = (bonusData: Omit<Bonus, 'id'>) => {
-    const newBonus: Bonus = { ...bonusData, id: `b-${Date.now()}` };
-    dispatch({ type: 'ADD_BONUS', payload: newBonus });
+  const addBonus = async (bonusData: Omit<Bonus, 'id'>) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const { data, error } = await supabase.from('bonuses').insert({user_id: bonusData.userId, ...bonusData}).select().single();
+    if (error) throw error;
+    dispatch({ type: 'ADD_BONUS', payload: mapToCamelCase(data) });
   };
   
-  const addPayment = (paymentData: Omit<Payment, 'id'>) => {
-    const newPayment: Payment = { ...paymentData, id: `p-${Date.now()}` };
-    dispatch({ type: 'ADD_PAYMENT', payload: newPayment });
+  const addPayment = async (paymentData: Omit<Payment, 'id'>) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const dbPayload = {
+        user_id: paymentData.userId,
+        printer_id: paymentData.printerId,
+        amount: paymentData.amount,
+        date: paymentData.date,
+        notes: paymentData.notes
+    };
+    const { data, error } = await supabase.from('payments').insert(dbPayload).select().single();
+    if (error) throw error;
+    dispatch({ type: 'ADD_PAYMENT', payload: mapToCamelCase(data) });
   };
 
-  const updateUserRate = (userId: string, newRate: number) => {
+  const updateUserRate = async (userId: string, newRate: number) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const { error } = await supabase.from('users').update({ hourly_rate: newRate }).eq('id', userId);
+    if (error) throw error;
     dispatch({ type: 'UPDATE_USER_RATE', payload: { userId, newRate } });
   };
   
-  const updateUserStoryRate = (userId: string, newRate: number) => {
+  const updateUserStoryRate = async (userId: string, newRate: number) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const { error } = await supabase.from('users').update({ story_rate: newRate }).eq('id', userId);
+    if (error) throw error;
     dispatch({ type: 'UPDATE_USER_STORY_RATE', payload: { userId, newRate } });
   };
 
-  const updatePrinterStoryRate = (printerId: string, newRate: number) => {
+  const updatePrinterStoryRate = async (printerId: string, newRate: number) => {
+    if (!supabase) throw new Error("Supabase not configured");
+    const { error } = await supabase.from('printers').update({ story_rate: newRate }).eq('id', printerId);
+    if (error) throw error;
     dispatch({ type: 'UPDATE_PRINTER_STORY_RATE', payload: { printerId, newRate } });
   };
 
@@ -110,6 +228,7 @@ export const useData = () => {
   return {
     loading: state.loading,
     orders: state.orders,
+    users: state.users,
     printers: state.printers,
     shippingCompanies: state.shippingCompanies,
     payments: state.payments,
@@ -119,8 +238,7 @@ export const useData = () => {
     designers: state.users.filter(u => u.role === UserRole.Designer),
     getFilteredOrders,
     createOrder,
-    updateOrderStatus,
-    editOrder,
+    updateOrder,
     deleteOrder,
     addHoursLog,
     addBonus,

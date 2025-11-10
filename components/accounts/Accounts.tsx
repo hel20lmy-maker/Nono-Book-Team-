@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useData } from '../../hooks/useData';
@@ -22,8 +21,9 @@ const ActionModal: React.FC<{ title: string; onClose: () => void; children: Reac
 
 
 const Accounts: React.FC = () => {
-  const { currentUser, users } = useAuth();
+  const { currentUser } = useAuth();
   const { 
+      users,
       orders, 
       payments, 
       storyPrice, 
@@ -41,6 +41,7 @@ const Accounts: React.FC = () => {
   const [modal, setModal] = useState<{type: 'hours' | 'rate' | 'bonus' | 'payment' | 'storyRate' | null, payee: User | Printer | null}>({type: null, payee: null});
   const [amount, setAmount] = useState(0);
   const [notes, setNotes] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const openModal = (type: 'hours' | 'rate' | 'bonus' | 'payment' | 'storyRate', payee: User | Printer) => {
     setAmount(0);
@@ -52,44 +53,52 @@ const Accounts: React.FC = () => {
     setModal({ type: null, payee: null });
   };
   
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modal.payee || amount <= 0) return;
+    if (!modal.payee || amount <= 0 || isSubmitting) return;
 
+    setIsSubmitting(true);
     const isUser = 'role' in modal.payee;
 
-    switch(modal.type) {
-        case 'hours':
-            if (isUser && modal.payee.role === UserRole.Sales) {
-                addHoursLog({ userId: modal.payee.id, hours: amount, rate: modal.payee.hourlyRate || 0, date: new Date() });
-            }
-            break;
-        case 'rate':
-            if (isUser && modal.payee.role === UserRole.Sales) {
-                updateUserRate(modal.payee.id, amount);
-            }
-            break;
-        case 'storyRate':
-            if (isUser && modal.payee.role === UserRole.Designer) {
-                updateUserStoryRate(modal.payee.id, amount);
-            } else if (!isUser) { // It's a Printer
-                updatePrinterStoryRate(modal.payee.id, amount);
-            }
-            break;
-        case 'bonus':
-            if (isUser) {
-                addBonus({ userId: modal.payee.id, amount, notes, date: new Date() });
-            }
-            break;
-        case 'payment':
-            if (isUser) {
-                addPayment({ userId: modal.payee.id, amount, notes, date: new Date() });
-            } else { // It's a Printer
-                addPayment({ printerId: modal.payee.id, amount, notes, date: new Date() });
-            }
-            break;
+    try {
+        switch(modal.type) {
+            case 'hours':
+                if (isUser && modal.payee.role === UserRole.Sales) {
+                    await addHoursLog({ userId: modal.payee.id, hours: amount, rate: modal.payee.hourlyRate || 0, date: new Date() });
+                }
+                break;
+            case 'rate':
+                if (isUser && modal.payee.role === UserRole.Sales) {
+                    await updateUserRate(modal.payee.id, amount);
+                }
+                break;
+            case 'storyRate':
+                if (isUser && modal.payee.role === UserRole.Designer) {
+                    await updateUserStoryRate(modal.payee.id, amount);
+                } else if (!isUser) { // It's a Printer
+                    await updatePrinterStoryRate(modal.payee.id, amount);
+                }
+                break;
+            case 'bonus':
+                if (isUser) {
+                    await addBonus({ userId: modal.payee.id, amount, notes, date: new Date() });
+                }
+                break;
+            case 'payment':
+                if (isUser) {
+                    await addPayment({ userId: modal.payee.id, amount, notes, date: new Date() });
+                } else { // It's a Printer
+                    await addPayment({ printerId: modal.payee.id, amount, notes, date: new Date() });
+                }
+                break;
+        }
+    } catch (error) {
+        console.error("Failed to submit account action:", error);
+        alert("An error occurred. Please try again.");
+    } finally {
+        setIsSubmitting(false);
+        closeModal();
     }
-    closeModal();
   };
 
   const renderContent = () => {
@@ -303,7 +312,9 @@ const Accounts: React.FC = () => {
                     </div>
                 )}
                 <div className="mt-6 flex justify-end">
-                    <button type="submit" className="py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700">Save</button>
+                    <button type="submit" className="py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300" disabled={isSubmitting}>
+                        {isSubmitting ? 'Saving...' : 'Save'}
+                    </button>
                 </div>
             </form>
         </ActionModal>

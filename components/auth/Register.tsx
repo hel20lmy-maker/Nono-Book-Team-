@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { UserRole } from '../../types';
@@ -18,7 +17,7 @@ const Register: React.FC<RegisterProps> = ({ onSwitchToLogin }) => {
   const [error, setError] = useState('');
   const { register } = useAuth();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (password !== confirmPassword) {
       setError("Passwords don't match.");
@@ -28,8 +27,8 @@ const Register: React.FC<RegisterProps> = ({ onSwitchToLogin }) => {
     setLoading(true);
 
     try {
-        register({ name, email, phone, role, password_do_not_use: password });
-        alert('Registration successful! You can now log in.');
+        await register({ name, email, phone, role, password_do_not_use: password });
+        alert('Registration successful! Please check your email to confirm your account, then you can log in.');
         onSwitchToLogin();
     } catch(err: any) {
         setError(err.message || "An unexpected error occurred during registration.");

@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { Order, OrderStatus, UserRole } from '../../types';
 import OrderCard from './OrderCard';
@@ -52,8 +51,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ columns }) => {
   const [isAssignModalOpen, setAssignModalOpen] = useState(false);
 
   const { currentUser } = useAuth();
-  // FIX: `useData` hook exports `editOrder`, not `updateOrder`.
-  const { editOrder, designers, orders: allOrders } = useData();
+  const { updateOrder, designers, orders: allOrders } = useData();
   const isUserAdmin = currentUser?.role === UserRole.Admin;
 
   const handleCardClick = (order: Order) => {
@@ -92,27 +90,33 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ columns }) => {
       const designer = designers.find(d => d.id === designerId);
       if(!designer) return;
 
-      selectedOrders.forEach(orderId => {
+      const promises = selectedOrders.map(orderId => {
           const orderToUpdate = allOrders.find(o => o.id === orderId);
           if (orderToUpdate && orderToUpdate.status === OrderStatus.New) {
               const updatedOrder = { ...orderToUpdate, status: OrderStatus.Designing, assignedToDesigner: designerId };
-              editOrder(updatedOrder, `Bulk assigned to Designer ${designer.name}`);
+              return updateOrder(updatedOrder, `Bulk assigned to Designer ${designer.name}`);
           }
+          return Promise.resolve();
       });
-      setAssignModalOpen(false);
-      setSelectedOrders([]);
+      Promise.all(promises).then(() => {
+        setAssignModalOpen(false);
+        setSelectedOrders([]);
+      });
   };
 
   const handleBulkMarkDelivered = () => {
        if (window.confirm(`Are you sure you want to mark ${selectedOrders.length} orders as delivered?`)) {
-            selectedOrders.forEach(orderId => {
+            const promises = selectedOrders.map(orderId => {
                 const orderToUpdate = allOrders.find(o => o.id === orderId);
                 if (orderToUpdate && orderToUpdate.status === OrderStatus.DomesticShipping) {
                     const updatedOrder = { ...orderToUpdate, status: OrderStatus.Delivered, deliveryDate: new Date() };
-                    editOrder(updatedOrder, 'Bulk marked as Delivered');
+                    return updateOrder(updatedOrder, 'Bulk marked as Delivered');
                 }
+                return Promise.resolve();
             });
-            setSelectedOrders([]);
+            Promise.all(promises).then(() => {
+                setSelectedOrders([]);
+            });
        }
   };
 

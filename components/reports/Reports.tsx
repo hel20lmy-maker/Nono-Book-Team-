@@ -6,8 +6,10 @@ import { UserRole, OrderStatus } from '../../types';
 import { USD_TO_EGP_RATE, USD_TO_LYD_RATE } from '../../constants';
 
 const Reports: React.FC = () => {
-  const { currentUser, users: USERS } = useAuth();
-  const { orders, printers } = useData();
+  // FIX: The `useAuth` hook does not return the list of users.
+  // The `users` array is fetched from the `useData` hook instead.
+  const { currentUser } = useAuth();
+  const { orders, printers, users: USERS } = useData();
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
 
   const filteredOrders = orders.filter(o => new Date(o.createdAt).getMonth() === selectedMonth);
