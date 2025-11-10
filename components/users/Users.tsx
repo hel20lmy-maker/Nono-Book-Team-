@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useData } from '../../hooks/useData';
@@ -8,13 +9,14 @@ import { XCircleIcon, PlusCircleIcon, LogOutIcon } from '../ui/Icons';
 const UserFormModal: React.FC<{
   userToEdit?: User | null;
   onClose: () => void;
-  onSave: (userData: any, userId?: string, oldPassword?: string) => Promise<void>;
+  onSave: (userData: any, userId?: string) => Promise<void>;
   existingUsers: User[];
 }> = ({ userToEdit, onClose, onSave, existingUsers }) => {
   const isEditMode = !!userToEdit;
   const { currentUser } = useAuth();
   const isAdmin = currentUser?.role === UserRole.Admin;
   const isSelfEdit = isEditMode && userToEdit?.id === currentUser?.id;
+  const isAdminEditingOther = isEditMode && !isSelfEdit && isAdmin;
 
   const [formData, setFormData] = useState({
     name: userToEdit?.name || '',
@@ -23,7 +25,6 @@ const UserFormModal: React.FC<{
     role: userToEdit?.role || UserRole.Sales,
   });
   
-  const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -41,12 +42,6 @@ const UserFormModal: React.FC<{
     if (newPassword !== confirmPassword) {
       setError("New passwords do not match.");
       return;
-    }
-
-    if (isSelfEdit && newPassword && !oldPassword) {
-      // Supabase does not require old password for update, so we can remove this client-side check.
-      // setError("Current password is required to set a new password.");
-      // return;
     }
 
     if (!isEditMode && !newPassword) {
@@ -76,7 +71,7 @@ const UserFormModal: React.FC<{
                 dataToSave.password = newPassword;
             }
         }
-        await onSave(dataToSave, userToEdit?.id, oldPassword);
+        await onSave(dataToSave, userToEdit?.id);
         onClose();
     } catch (err: any) {
         setError(err.message || 'An error occurred.');
@@ -100,7 +95,8 @@ const UserFormModal: React.FC<{
                 </div>
                  <div>
                     <label className="block text-sm font-medium">Email</label>
-                    <input type="email" name="email" value={formData.email} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" required disabled={isSubmitting} />
+                    <input type="email" name="email" value={formData.email} onChange={handleChange} className="mt-1 w-full border-gray-300 rounded-md shadow-sm disabled:bg-gray-100" required disabled={isSubmitting || isAdminEditingOther} />
+                     {isAdminEditingOther && <p className="text-xs text-gray-500 mt-1">Admins cannot change user emails.</p>}
                 </div>
                 <div>
                     <label className="block text-sm font-medium">Phone</label>
@@ -118,20 +114,15 @@ const UserFormModal: React.FC<{
 
                 <div className="pt-2 border-t">
                     <h4 className="text-md font-semibold text-gray-800 mb-2">{isEditMode ? 'Change Password' : 'Set Password'}</h4>
-                    {isSelfEdit && (
-                        <div>
-                            <label className="block text-sm font-medium">Current Password</label>
-                            <input type="password" name="oldPassword" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} placeholder="Not required by Supabase, but good practice" className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
-                        </div>
-                    )}
                     <div>
                         <label className="block text-sm font-medium">New Password</label>
-                        <input type="password" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={isEditMode ? "Leave blank to keep current" : "Required for new user"} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
+                        <input type="password" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder={isEditMode ? "Leave blank to keep current" : "Required for new user"} className="mt-1 w-full border-gray-300 rounded-md shadow-sm disabled:bg-gray-100" disabled={isSubmitting || isAdminEditingOther} />
                     </div>
                     <div>
                         <label className="block text-sm font-medium">Confirm New Password</label>
-                        <input type="password" name="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" disabled={isSubmitting} />
+                        <input type="password" name="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="mt-1 w-full border-gray-300 rounded-md shadow-sm disabled:bg-gray-100" disabled={isSubmitting || isAdminEditingOther} />
                     </div>
+                    {isAdminEditingOther && <p className="text-xs text-gray-500 mt-1">Admins cannot change passwords for other users.</p>}
                 </div>
 
                 <div className="flex justify-end pt-4">
@@ -153,15 +144,13 @@ const Users: React.FC = () => {
 
     const isAdmin = currentUser?.role === UserRole.Admin;
 
-    const handleSaveUser = async (userData: any, userId?: string, oldPassword?: string) => {
+    const handleSaveUser = async (userData: any, userId?: string) => {
         if (userId) { // Editing existing user
             const { password_do_not_use, ...data } = userData;
-            await updateUser(userId, data, oldPassword);
+            await updateUser(userId, data);
         } else { // Adding new user
             await register(userData);
-            // In a real app, you might want to refetch users or add the new user to state
-            // to avoid a full page reload. For now, we rely on AppProvider's data fetching.
-            // A page reload or re-fetch of data will be needed to see the new user.
+            // After adding, the list will refresh automatically via the auth listener.
         }
     };
 

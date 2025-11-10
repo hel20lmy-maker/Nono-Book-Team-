@@ -36,7 +36,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
 
   const isOrderCreator = currentUser?.id === order.createdBy;
   const canModify = currentUser?.role === UserRole.Admin || isOrderCreator;
-  const canDelete = (currentUser?.role === UserRole.Admin) || (isOrderCreator && order.status === OrderStatus.New);
+  const canDelete = (currentUser?.role === UserRole.Admin) || (isOrderCreator && [OrderStatus.New, OrderStatus.Cancelled].includes(order.status));
 
   const handleAssignDesigner = async () => {
     if (!selectedDesigner) return;
@@ -314,9 +314,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
 
   const renderedFooterActions = renderFooterActions();
   const canCancel =
-    (currentUser?.role === UserRole.Admin || (isOrderCreator && order.status === OrderStatus.New)) &&
-    order.status !== OrderStatus.Delivered &&
-    order.status !== OrderStatus.Cancelled;
+    (currentUser?.role === UserRole.Admin || isOrderCreator) &&
+    ![OrderStatus.Delivered, OrderStatus.Cancelled].includes(order.status);
 
   const renderContent = () => {
     if (isEditing) {

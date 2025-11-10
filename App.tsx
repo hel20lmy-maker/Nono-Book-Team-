@@ -13,7 +13,7 @@ type AuthView = 'login' | 'register';
 const DatabaseSetupErrorComponent: React.FC = () => {
     const sqlToRun = `-- This script sets up and patches the database schema for the Nono Book Team app.
 -- It is idempotent and can be run safely multiple times to apply updates.
--- VERSION 2.2: Adds base table permissions to fix deletion issues.
+-- VERSION 2.4: Fixes RLS policies for order cancellation and deletion.
 
 -- STEP 1: Create all required tables if they don't exist
 -- ========================================================
@@ -109,16 +109,25 @@ CREATE POLICY "Allow admin full access on shipping_companies" ON public.shipping
 
 -- Orders RLS
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow authenticated users to manage orders" ON public.orders; -- Old permissive policy
+DROP POLICY IF EXISTS "Allow authenticated users to manage orders" ON public.orders;
 DROP POLICY IF EXISTS "Admins can manage all orders" ON public.orders;
 DROP POLICY IF EXISTS "Users can view their relevant orders" ON public.orders;
 DROP POLICY IF EXISTS "Sales can create new orders" ON public.orders;
 DROP POLICY IF EXISTS "Creators can delete new orders" ON public.orders;
+DROP POLICY IF EXISTS "Creators can update their non-finalized orders" ON public.orders;
+DROP POLICY IF EXISTS "Creators can delete their new or cancelled orders" ON public.orders;
 
 CREATE POLICY "Admins can manage all orders" ON public.orders FOR ALL USING (is_admin());
 CREATE POLICY "Users can view their relevant orders" ON public.orders FOR SELECT USING (auth.uid() = created_by OR auth.uid() = assigned_to_designer);
 CREATE POLICY "Sales can create new orders" ON public.orders FOR INSERT WITH CHECK ((auth.jwt()->>'user_metadata')::jsonb->>'role' = 'Sales' AND auth.uid() = created_by);
-CREATE POLICY "Creators can delete new orders" ON public.orders FOR DELETE USING (auth.uid() = created_by AND status = 'New Order');
+
+-- FIX: Allow creators to UPDATE their orders (e.g., to cancel them) as long as they have not been delivered.
+CREATE POLICY "Creators can update their non-finalized orders" ON public.orders FOR UPDATE
+USING (auth.uid() = created_by AND status <> 'Delivered');
+
+-- FIX: Allow creators to DELETE orders they created if they are in a pre-production state or already cancelled.
+CREATE POLICY "Creators can delete their new or cancelled orders" ON public.orders FOR DELETE
+USING (auth.uid() = created_by AND status IN ('New Order', 'Cancelled'));
 
 ALTER TABLE public.hours_logs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow users to manage their own hours" ON public.hours_logs;
@@ -142,15 +151,29 @@ CREATE POLICY "Allow admin full access on payments" ON public.payments FOR ALL U
 -- STEP 3: Create Functions and Triggers
 -- =============================================
 
--- Function to update a user's role in auth metadata (needed for RLS).
-CREATE OR REPLACE FUNCTION public.update_auth_user_role(user_id uuid, new_role TEXT)
-RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+-- Drop old role-update function if it exists
+DROP FUNCTION IF EXISTS public.update_auth_user_role(uuid, text);
+
+-- Function for admins to update other users' details (name, phone, role)
+CREATE OR REPLACE FUNCTION public.update_user_details_by_admin(user_id_to_update uuid, new_name TEXT, new_phone TEXT, new_role TEXT)
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
+  IF NOT is_admin() THEN
+    RAISE EXCEPTION 'Permission denied: Only admins can update user details.';
+  END IF;
+
   UPDATE auth.users
-  SET raw_user_meta_data = raw_user_meta_data || jsonb_build_object('role', new_role)
-  WHERE id = user_id;
+  SET raw_user_meta_data = raw_user_meta_data || 
+    jsonb_build_object(
+      'name', new_name,
+      'phone', new_phone,
+      'role', new_role
+    )
+  WHERE id = user_id_to_update;
+  RETURN 'User details updated successfully.';
 END;
 $$;
+
 
 -- Function to copy new user data and make the first user an admin.
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -159,10 +182,10 @@ DECLARE
   user_count INT;
   new_user_role TEXT;
 BEGIN
-  SELECT count(*) INTO user_count FROM public.users;
+  SELECT count(*) INTO user_count FROM auth.users;
   IF user_count = 0 THEN
     new_user_role := 'Admin';
-    PERFORM public.update_auth_user_role(NEW.id, new_user_role);
+    UPDATE auth.users SET raw_user_meta_data = raw_user_meta_data || jsonb_build_object('role', 'Admin') WHERE id = NEW.id;
   ELSE
     new_user_role := NEW.raw_user_meta_data->>'role';
   END IF;
@@ -177,6 +200,28 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
 AFTER INSERT ON auth.users
 FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- Function to sync user updates from auth.users to public.users
+CREATE OR REPLACE FUNCTION public.handle_user_update()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE public.users
+  SET
+    name = NEW.raw_user_meta_data->>'name',
+    phone = NEW.raw_user_meta_data->>'phone',
+    role = NEW.raw_user_meta_data->>'role',
+    email = NEW.email
+  WHERE id = NEW.id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to call the sync function on user update
+DROP TRIGGER IF EXISTS on_auth_user_updated ON auth.users;
+CREATE TRIGGER on_auth_user_updated
+AFTER UPDATE ON auth.users
+FOR EACH ROW EXECUTE PROCEDURE public.handle_user_update();
+
 
 -- Secure function to completely delete a user (auth and public profile)
 CREATE OR REPLACE FUNCTION public.delete_user_by_id(user_id_to_delete uuid)
@@ -203,6 +248,7 @@ ALTER TABLE public.orders ADD CONSTRAINT orders_assigned_to_designer_fkey FOREIG
 -- STEP 5: Grant Function Permissions
 -- =============================================
 GRANT EXECUTE ON FUNCTION public.delete_user_by_id(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_user_details_by_admin(uuid, text, text, text) TO authenticated;
 
 
 -- STEP 6: Create Storage Policies for 'order-files' bucket

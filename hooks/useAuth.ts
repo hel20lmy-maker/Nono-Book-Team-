@@ -48,46 +48,89 @@ export const useAuth = () => {
     return data.user;
   };
 
-  const updateUser = async (userId: string, userData: Partial<User>, oldPassword?: string) => {
+  const updateUser = async (userId: string, userData: Partial<User>) => {
       if (!supabase) throw new Error("Supabase not configured");
-      // Supabase policies will handle authorization
+      
       const { name, phone, role, email, password } = userData;
+      const { data: { user: sessionUser } } = await supabase.auth.getUser();
+      if (!sessionUser) throw new Error("User not found for session");
 
-      // Update profile data in public.users table
-      const { error: profileError } = await supabase
-        .from('users')
-        .update({ name, phone, role, email }) // email might be updated here too
-        .eq('id', userId);
-      if (profileError) throw profileError;
+      const isAdmin = state.currentUser?.role === UserRole.Admin;
+      const isSelfEdit = sessionUser.id === userId;
 
-      // Update auth.users data (email, password)
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("User not found");
-
-      let authUpdatePayload: any = {};
-      if (email && email !== user.email) {
-          authUpdatePayload.email = email;
-      }
-      if (password) {
-          authUpdatePayload.password = password;
+      // Prevent admin from changing their own role
+      if (isSelfEdit && isAdmin && role !== state.currentUser?.role) {
+          throw new Error("Admins cannot change their own role.");
       }
 
-      if (Object.keys(authUpdatePayload).length > 0) {
-        const { error: authError } = await supabase.auth.updateUser(authUpdatePayload);
-        if (authError) throw authError;
+      if (isSelfEdit) {
+        // --- SELF-EDIT LOGIC ---
+        const authUpdatePayload: any = {};
+        const metadataUpdate: any = {};
+
+        if (name && name !== sessionUser.user_metadata.name) metadataUpdate.name = name;
+        if (phone && phone !== sessionUser.user_metadata.phone) metadataUpdate.phone = phone;
+        // Self-edit cannot change role. The UI prevents this for non-admins,
+        // and we have a check above to prevent admins from changing their own role.
+        
+        if (Object.keys(metadataUpdate).length > 0) {
+            authUpdatePayload.data = { ...sessionUser.user_metadata, ...metadataUpdate };
+        }
+
+        if (email && email !== sessionUser.email) {
+            authUpdatePayload.email = email;
+        }
+        if (password) {
+            authUpdatePayload.password = password;
+        }
+
+        if (Object.keys(authUpdatePayload).length > 0) {
+          const { error: authError } = await supabase.auth.updateUser(authUpdatePayload);
+          if (authError) throw authError;
+        }
+
+      } else if (isAdmin) {
+        // --- ADMIN EDITING ANOTHER USER ---
+        if (email || password) {
+            throw new Error("Admins cannot change email or password for other users. This should be disabled in the UI.");
+        }
+
+        const targetUser = state.users.find(u => u.id === userId);
+        if (!targetUser) throw new Error("Target user not found in state.");
+
+        const { error: rpcError } = await supabase.rpc('update_user_details_by_admin', {
+          user_id_to_update: userId,
+          new_name: name || targetUser.name,
+          new_phone: phone || targetUser.phone,
+          new_role: role || targetUser.role
+        });
+
+        if (rpcError) {
+             if (rpcError.message.includes('function public.update_user_details_by_admin')) {
+                throw new Error("User update failed: The required database function is missing. Please run the setup script again.");
+             }
+             throw rpcError;
+        }
+      } else {
+          throw new Error("You do not have permission to edit this user.");
       }
       
-      // Re-fetch user to update state
-       const { data: profile, error: refetchError } = await supabase
+      // The DB trigger (`handle_user_update`) will sync these changes to `public.users`.
+      // To provide immediate UI feedback, we manually refetch the updated profile and dispatch it to the context.
+      const { data: updatedProfile, error: refetchError } = await supabase
           .from('users')
           .select('*')
-          .eq('id', user.id)
+          .eq('id', userId)
           .single();
 
-      if (refetchError) throw refetchError;
+      if (refetchError) {
+        // Don't throw, just log, as the update likely succeeded but the RLS select might be slow to catch up.
+        console.error("Failed to refetch user profile after update:", refetchError);
+        return;
+      }
       
-      if(profile) {
-        const userWithProfile: User = { ...mapToCamelCase(profile), email: user.email || profile.email };
+      if(updatedProfile) {
+        const userWithProfile: User = { ...mapToCamelCase(updatedProfile) };
         dispatch({ type: 'UPDATE_USER', payload: userWithProfile });
       }
   };
