@@ -18,10 +18,11 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
 
+  const currency = customer.country === 'مصر' ? 'EGP' : 'LYD';
+
   useEffect(() => {
     // Create blob URLs for previews
     const newPreviews = imageFiles.map(file => URL.createObjectURL(file));
-    setImagePreviews(newPreviews);
     
     // Cleanup function
     return () => {
@@ -63,9 +64,10 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
         };
         await createOrder(newOrderData, imageFiles);
         onClose();
-    } catch (error) {
+    } catch (error: any) {
         console.error("Failed to create order:", error);
-        alert("An error occurred while creating the order. Please check the console and try again.");
+        const errorMessage = error.message || "An unknown error occurred. Please check the console for details.";
+        alert(`Failed to create order:\n${errorMessage}`);
     } finally {
         setIsUploading(false);
     }
@@ -135,7 +137,7 @@ const CreateOrderModal: React.FC<CreateOrderModalProps> = ({ onClose }) => {
                   <input type="number" name="copies" value={story.copies} onChange={handleStoryChange} min="1" className="mt-1 block w-full border-gray-300 rounded-md shadow-sm" required />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Price ($)</label>
+                  <label className="block text-sm font-medium text-gray-700">Price ({currency})</label>
                   <input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} min="0" className="mt-1 block w-full border-gray-300 rounded-md shadow-sm" required />
                 </div>
               </div>

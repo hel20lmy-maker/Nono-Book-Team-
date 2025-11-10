@@ -1,8 +1,10 @@
+
 import React, { useState } from 'react';
 import { Order, OrderStatus, UserRole, Customer, StoryDetails } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useData } from '../../hooks/useData';
 import { XCircleIcon } from '../ui/Icons';
+import { formatDateTime, formatCurrency } from '../../lib/utils';
 
 interface OrderDetailModalProps {
   order: Order;
@@ -30,7 +32,11 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
   const [editedStory, setEditedStory] = useState<StoryDetails>(order.story);
   const [editedPrice, setEditedPrice] = useState(order.price);
 
-  const canModify = currentUser?.role === UserRole.Admin || currentUser?.id === order.createdBy;
+  const currency = editedCustomer.country === 'مصر' ? 'EGP' : 'LYD';
+
+  const isOrderCreator = currentUser?.id === order.createdBy;
+  const canModify = currentUser?.role === UserRole.Admin || isOrderCreator;
+  const canDelete = (currentUser?.role === UserRole.Admin) || (isOrderCreator && order.status === OrderStatus.New);
 
   const handleAssignDesigner = async () => {
     if (!selectedDesigner) return;
@@ -125,16 +131,26 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
 
   const handleCancelOrder = async () => {
     if (window.confirm('Are you sure you want to cancel this order? This action cannot be undone.')) {
-        const updatedOrder = { ...order, status: OrderStatus.Cancelled };
-        await updateOrder(updatedOrder, 'Order Cancelled');
-        onClose();
+        try {
+            const updatedOrder = { ...order, status: OrderStatus.Cancelled };
+            await updateOrder(updatedOrder, 'Order Cancelled');
+            onClose();
+        } catch (error: any) {
+            console.error("Failed to cancel order:", error);
+            alert(`Error: Could not cancel the order. ${error.message}`);
+        }
     }
   };
 
   const handleDeleteOrder = async () => {
-    if (window.confirm(`Are you sure you want to permanently delete order ${order.id}? This action cannot be undone.`)) {
-        await deleteOrder(order.id);
-        onClose();
+    if (window.confirm(`Are you sure you want to permanently delete order #${order.id.substring(0,8)}? This will also delete all associated files and cannot be undone.`)) {
+        try {
+            await deleteOrder(order.id);
+            onClose();
+        } catch (error: any) {
+            console.error("Failed to delete order:", error);
+            alert(`Error: Could not delete the order. ${error.message}`);
+        }
     }
   };
 
@@ -298,7 +314,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
 
   const renderedFooterActions = renderFooterActions();
   const canCancel =
-    currentUser?.role === UserRole.Admin &&
+    (currentUser?.role === UserRole.Admin || (isOrderCreator && order.status === OrderStatus.New)) &&
     order.status !== OrderStatus.Delivered &&
     order.status !== OrderStatus.Cancelled;
 
@@ -341,7 +357,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                         <textarea value={editedStory.details} onChange={e => setEditedStory({...editedStory, details: e.target.value})} rows={3} className="mt-1 w-full border-gray-300 rounded-md shadow-sm" />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Price ($)</label>
+                        <label className="block text-sm font-medium text-gray-700">Price ({currency})</label>
                         <input type="number" value={editedPrice} onChange={e => setEditedPrice(Number(e.target.value))} min="0" className="mt-1 block w-full border-gray-300 rounded-md shadow-sm" />
                     </div>
                 </div>
@@ -366,7 +382,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                   <p><strong>Type:</strong> {order.story.type}</p>
                   <p><strong>Copies:</strong> {order.story.copies}</p>
                   <p><strong>Details:</strong> {order.story.details}</p>
-                  <p className="mt-2"><strong>Price:</strong> <span className="font-bold text-green-600">${order.price}</span></p>
+                  <p className="mt-2"><strong>Price:</strong> <span className="font-bold text-green-600">{formatCurrency(order.price, order.customer.country)}</span></p>
                 </div>
             </div>
 
@@ -408,7 +424,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
                     {[...(order.activityLog || [])].reverse().map((log, index) => (
                         <li key={index} className="p-2 bg-gray-50 rounded-md">
                             <span className="font-semibold text-gray-700">{log.user}</span> ({log.role}) - {log.action}
-                            <span className="text-gray-500 block text-xs">{new Date(log.timestamp).toLocaleString()}</span>
+                            <span className="text-gray-500 block text-xs">{formatDateTime(log.timestamp)}</span>
                              {log.file && <a href={log.file.url} className="text-blue-500 text-xs block" target="_blank" rel="noopener noreferrer">View File: {log.file.name}</a>}
                         </li>
                     ))}
@@ -423,15 +439,15 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({ order, onClose }) =
       <div className="bg-white rounded-lg shadow-2xl w-11/12 md:w-full max-w-4xl max-h-[90vh] flex flex-col">
         <div className="p-4 md:p-6 flex justify-between items-center border-b">
             <div>
-                <h2 className="text-xl md:text-2xl font-bold">Order: {order.id}</h2>
+                <h2 className="text-xl md:text-2xl font-bold">Order: <span title={order.id}>#{order.id.substring(0, 8)}</span></h2>
                 <span className={`text-sm font-semibold px-2 py-0.5 rounded-full ${order.status === OrderStatus.Cancelled ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{order.status}</span>
             </div>
             <div className="flex items-center gap-2">
                 {canModify && !isEditing && (
-                    <>
-                        <button onClick={() => setIsEditing(true)} className="text-sm font-medium text-blue-600 hover:text-blue-800">Edit</button>
-                        <button onClick={handleDeleteOrder} className="text-sm font-medium text-red-600 hover:text-red-800">Delete</button>
-                    </>
+                    <button onClick={() => setIsEditing(true)} className="text-sm font-medium text-blue-600 hover:text-blue-800">Edit</button>
+                )}
+                {canDelete && !isEditing && (
+                    <button onClick={handleDeleteOrder} className="text-sm font-medium text-red-600 hover:text-red-800">Delete</button>
                 )}
                 <button onClick={onClose}><XCircleIcon className="w-8 h-8 text-gray-500 hover:text-gray-800" /></button>
             </div>

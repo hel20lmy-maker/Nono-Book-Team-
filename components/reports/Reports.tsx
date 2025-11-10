@@ -1,13 +1,10 @@
-
 import React, { useState, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useData } from '../../hooks/useData';
 import { UserRole, OrderStatus } from '../../types';
-import { USD_TO_EGP_RATE, USD_TO_LYD_RATE } from '../../constants';
+import { formatCurrency } from '../../lib/utils';
 
 const Reports: React.FC = () => {
-  // FIX: The `useAuth` hook does not return the list of users.
-  // The `users` array is fetched from the `useData` hook instead.
   const { currentUser } = useAuth();
   const { orders, printers, users: USERS } = useData();
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
@@ -119,14 +116,14 @@ const Reports: React.FC = () => {
                     <span className="text-2xl mr-2">🇪🇬</span> Egypt (مصر)
                 </h4>
                 <p><strong>Total Orders:</strong> {countryStats.egypt.count}</p>
-                <p><strong>Total Revenue:</strong> <span className="font-semibold text-green-700">{(countryStats.egypt.totalValue * USD_TO_EGP_RATE).toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })}</span></p>
+                <p><strong>Total Revenue:</strong> <span className="font-semibold text-green-700">{formatCurrency(countryStats.egypt.totalValue, 'مصر')}</span></p>
             </div>
             <div className="p-4 bg-white rounded shadow space-y-2">
                 <h4 className="font-bold text-lg flex items-center">
                     <span className="text-2xl mr-2">🇱🇾</span> Libya (ليبيا)
                 </h4>
                 <p><strong>Total Orders:</strong> {countryStats.libya.count}</p>
-                <p><strong>Total Revenue:</strong> <span className="font-semibold text-green-700">{(countryStats.libya.totalValue * USD_TO_LYD_RATE).toLocaleString('ar-LY', { style: 'currency', currency: 'LYD' })}</span></p>
+                <p><strong>Total Revenue:</strong> <span className="font-semibold text-green-700">{formatCurrency(countryStats.libya.totalValue, 'ليبيا')}</span></p>
             </div>
           </div>
         </div>

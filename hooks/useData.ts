@@ -1,3 +1,4 @@
+
 import { useContext } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Order, User, UserRole, OrderStatus, ActivityLogEntry, HoursLog, Bonus, Payment } from '../types';
@@ -48,7 +49,7 @@ export const useData = () => {
   const createOrder = async (orderData: Omit<Order, 'id' | 'createdAt' | 'activityLog' | 'referenceImages'>, files: File[]) => {
     if (!currentUser || !supabase) throw new Error("User not authenticated");
     
-    // 1. Insert order data to get a new order ID
+    // 1. Prepare order data for insertion
     const initialActivity: ActivityLogEntry = {
         user: currentUser.name,
         role: currentUser.role,
@@ -56,12 +57,16 @@ export const useData = () => {
         timestamp: new Date()
     };
     
+    // Manually construct payload to ensure snake_case and avoid sending invalid fields like 'createdBy'
     const dbPayload = {
-        ...orderData,
-        created_by: currentUser.id, // snake_case for DB
-        created_at: new Date(),
-        activity_log: [initialActivity],
-        reference_images: []
+      status: orderData.status,
+      customer: orderData.customer,
+      story: orderData.story,
+      price: orderData.price,
+      created_by: currentUser.id,
+      created_at: new Date(),
+      activity_log: [initialActivity],
+      reference_images: [], // Initially empty, will be updated after file uploads
     };
 
     const { data: newOrder, error: insertError } = await supabase
@@ -70,7 +75,10 @@ export const useData = () => {
         .select()
         .single();
     
-    if (insertError) throw insertError;
+    if (insertError) {
+      console.error('Supabase create order error:', insertError);
+      throw insertError;
+    }
 
     // 2. Upload files using the new order ID
     const uploadPromises = files.map(file => uploadOrderFile(file, newOrder.id));
@@ -151,22 +159,75 @@ export const useData = () => {
 
   const deleteOrder = async (orderId: string) => {
       if (!supabase) throw new Error("Supabase not configured");
-      // TODO: Add logic to delete files from storage if needed
-      const { error } = await supabase.from('orders').delete().eq('id', orderId);
-      if (error) throw error;
+      
+      // 1. Fetch the order to get file paths
+      const { data: order, error: fetchError } = await supabase
+          .from('orders')
+          .select('reference_images, final_pdf, cover_image')
+          .eq('id', orderId)
+          .single();
+
+      // If fetch fails but it's not a "not found" error, throw.
+      if (fetchError && fetchError.code !== 'PGRST116') {
+          console.error("Error fetching order before deletion:", fetchError);
+          throw fetchError;
+      }
+      
+      // 2. If order exists, collect and delete associated files
+      if (order) {
+          const fileUrls: string[] = [];
+          (order.reference_images || []).forEach((file: any) => file && file.url && fileUrls.push(file.url));
+          if (order.final_pdf?.url) fileUrls.push(order.final_pdf.url);
+          if (order.cover_image?.url) fileUrls.push(order.cover_image.url);
+
+          const filePaths = fileUrls.map(url => {
+              try {
+                  const urlParts = new URL(url).pathname.split('/order-files/');
+                  return urlParts[1];
+              } catch (e) {
+                  console.warn("Could not parse file URL for deletion:", url);
+                  return null;
+              }
+          }).filter((p): p is string => p !== null);
+
+          if (filePaths.length > 0) {
+              const { error: storageError } = await supabase.storage.from('order-files').remove(filePaths);
+              if (storageError) {
+                  // Log the error but proceed with DB deletion to avoid leaving the user in a broken state.
+                  console.error("Failed to delete associated files from storage, but proceeding with DB deletion:", storageError);
+              }
+          }
+      }
+
+      // 3. Delete the order from the database
+      const { error: deleteError } = await supabase.from('orders').delete().eq('id', orderId);
+      if (deleteError) throw deleteError;
+      
       dispatch({ type: 'DELETE_ORDER', payload: orderId });
   };
 
   const addHoursLog = async (logData: Omit<HoursLog, 'id'>) => {
     if (!supabase) throw new Error("Supabase not configured");
-    const { data, error } = await supabase.from('hours_logs').insert({user_id: logData.userId, ...logData}).select().single();
+    const dbPayload = {
+      user_id: logData.userId,
+      hours: logData.hours,
+      rate: logData.rate,
+      date: logData.date,
+    };
+    const { data, error } = await supabase.from('hours_logs').insert(dbPayload).select().single();
     if (error) throw error;
     dispatch({ type: 'ADD_HOURS_LOG', payload: mapToCamelCase(data) });
   };
 
   const addBonus = async (bonusData: Omit<Bonus, 'id'>) => {
     if (!supabase) throw new Error("Supabase not configured");
-    const { data, error } = await supabase.from('bonuses').insert({user_id: bonusData.userId, ...bonusData}).select().single();
+    const dbPayload = {
+      user_id: bonusData.userId,
+      amount: bonusData.amount,
+      date: bonusData.date,
+      notes: bonusData.notes,
+    };
+    const { data, error } = await supabase.from('bonuses').insert(dbPayload).select().single();
     if (error) throw error;
     dispatch({ type: 'ADD_BONUS', payload: mapToCamelCase(data) });
   };

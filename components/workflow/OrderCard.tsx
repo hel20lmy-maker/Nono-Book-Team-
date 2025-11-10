@@ -1,7 +1,7 @@
-
 import React from 'react';
 import { Order, OrderStatus } from '../../types';
 import { useData } from '../../hooks/useData';
+import { formatDate, formatCurrency } from '../../lib/utils';
 
 interface OrderCardProps {
   order: Order;
@@ -59,8 +59,8 @@ const OrderCard: React.FC<OrderCardProps> = ({ order, onClick, isSelectable, isS
         className="cursor-pointer w-full"
       >
           <div className="flex justify-between items-start">
-            <h4 className="font-bold text-gray-800">{order.id}</h4>
-            <span className="text-sm font-semibold text-blue-600">${order.price}</span>
+            <h4 className="font-bold text-gray-800" title={order.id}>#{order.id.substring(0, 8)}</h4>
+            <span className="text-sm font-semibold text-blue-600">{formatCurrency(order.price, order.customer.country)}</span>
           </div>
           <p className="text-sm text-gray-600 mt-2">Customer: {order.customer.name}</p>
           <p className="text-sm text-gray-600">Country: {order.customer.country}</p>
@@ -68,7 +68,7 @@ const OrderCard: React.FC<OrderCardProps> = ({ order, onClick, isSelectable, isS
             <p className="text-sm font-medium text-purple-600 mt-2">{assigneeInfo}</p>
           )}
           <p className="text-sm text-gray-500 mt-3">
-            Created: {new Date(order.createdAt).toLocaleDateString()}
+            Created: {formatDate(order.createdAt)}
           </p>
       </div>
     </div>

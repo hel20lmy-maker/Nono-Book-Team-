@@ -99,14 +99,20 @@ export const useAuth = () => {
         alert("You cannot delete your own account.");
         return;
     }
-    // This action should be handled by an admin user. Supabase RLS policies should enforce this.
-    // Deleting from public.users should cascade-delete the auth.user via a DB trigger if configured.
-    // For now, we just delete the public profile.
-    console.warn("User profile deletion initiated. Deleting the auth user requires a cascade delete setup in the database.");
-    const { error } = await supabase.from('users').delete().eq('id', userId);
+    
+    // Call the PostgreSQL function to safely delete the user from auth and public schemas.
+    const { error } = await supabase.rpc('delete_user_by_id', {
+      user_id_to_delete: userId
+    });
 
     if (error) {
-        console.error("Error deleting user profile:", error);
+        console.error("Error deleting user:", error);
+        // The error might be because the function doesn't exist yet.
+        if (error.message.includes('function public.delete_user_by_id')) {
+             alert('Deletion failed: The required database function is missing. Please run the setup script from the SQL Editor in your Supabase dashboard to apply the latest updates.');
+        } else {
+            alert(`An error occurred while deleting the user: ${error.message}`);
+        }
         throw error;
     }
     
@@ -118,6 +124,7 @@ export const useAuth = () => {
     currentUser: state.currentUser,
     loading: state.loading,
     dbError: state.dbError,
+    users: state.users,
     login,
     logout,
     register,

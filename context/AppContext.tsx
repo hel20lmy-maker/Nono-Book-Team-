@@ -47,6 +47,7 @@ interface AppState {
   hoursLogs: HoursLog[];
   bonuses: Bonus[];
   storyPrice: number;
+  searchQuery: string;
 }
 
 type Action =
@@ -59,13 +60,14 @@ type Action =
   | { type: 'ADD_ORDER'; payload: Order }
   | { type: 'UPDATE_ORDER'; payload: Order }
   | { type: 'DELETE_ORDER'; payload: string } // payload is orderId
-  | { type: 'INITIALIZE_STATE'; payload: Omit<AppState, 'loading' | 'currentUser' | 'dbError'> }
+  | { type: 'INITIALIZE_STATE'; payload: Partial<Omit<AppState, 'loading' | 'currentUser' | 'dbError'>> }
   | { type: 'ADD_HOURS_LOG'; payload: HoursLog }
   | { type: 'ADD_BONUS'; payload: Bonus }
   | { type: 'ADD_PAYMENT'; payload: Payment }
   | { type: 'UPDATE_USER_RATE'; payload: { userId: string; newRate: number } }
   | { type: 'UPDATE_USER_STORY_RATE'; payload: { userId: string; newRate: number } }
-  | { type: 'UPDATE_PRINTER_STORY_RATE'; payload: { printerId: string; newRate: number } };
+  | { type: 'UPDATE_PRINTER_STORY_RATE'; payload: { printerId: string; newRate: number } }
+  | { type: 'SET_SEARCH_QUERY'; payload: string };
 
 
 const initialState: AppState = {
@@ -80,6 +82,7 @@ const initialState: AppState = {
   hoursLogs: [],
   bonuses: [],
   storyPrice: STORY_PRICE,
+  searchQuery: '',
 };
 
 const appReducer = (state: AppState, action: Action): AppState => {
@@ -145,6 +148,8 @@ const appReducer = (state: AppState, action: Action): AppState => {
                 : p
             ),
         };
+    case 'SET_SEARCH_QUERY':
+        return { ...state, searchQuery: action.payload };
     default:
       return state;
   }
@@ -205,8 +210,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (res.error) throw new Error(`Failed to fetch ${key}: ${res.error.message}`);
         }
 
+        const usersData = usersRes.data || [];
+        const hasAdmin = usersData.some(u => mapToCamelCase(u).role === UserRole.Admin);
+
+        if (!hasAdmin && usersData.length > 0) {
+            // Special case: users exist but none are admins.
+            dispatch({ type: 'INITIALIZE_STATE', payload: { users: usersData } });
+            dispatch({ type: 'SET_DB_ERROR', payload: 'NO_ADMIN_FOUND' });
+            dispatch({ type: 'SET_LOADING', payload: false });
+            return;
+        }
+
         const fetchedState = {
-          users: usersRes.data || [],
+          users: usersData,
           orders: ordersRes.data || [],
           printers: printersRes.data || [],
           shippingCompanies: shippingCompaniesRes.data || [],
